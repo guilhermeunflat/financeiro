@@ -94,28 +94,45 @@ if pagina == "Importar extratos":
         accept_multiple_files=True,
     )
 
-    if files:
-        frames = []
-        for f in files:
-            try:
-                from finance import importers
-                df = importers.load_file(f.name, f.getvalue(), invert=invert)
-                frames.append(df)
-                st.success(f"{f.name}: {len(df)} transações lidas.")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"{f.name}: erro ao ler — {e}")
+    if files and st.button(f"Processar e salvar {len(files)} arquivo(s)",
+                           type="primary"):
+        import gc
 
-        if frames:
-            novos = pd.concat(frames, ignore_index=True)
-            st.subheader("Prévia")
-            st.dataframe(novos.head(50), use_container_width=True)
-            if st.button("Salvar no banco de dados", type="primary"):
-                # categoriza por regras antes de salvar
-                novos["category"] = categorize.apply_rules(novos)
-                inseridos = storage.insert_transactions(novos)
-                st.success(f"{inseridos} transações novas salvas "
-                           f"({len(novos) - inseridos} já existiam).")
-                st.rerun()
+        from finance import importers
+
+        prog = st.progress(0.0, text="Processando...")
+        total_novos = 0
+        resumo = []
+        # um arquivo por vez: lê, categoriza, salva e libera a memória.
+        # Evita estourar a RAM ao importar vários PDFs de uma vez.
+        for i, f in enumerate(files, start=1):
+            try:
+                df = importers.load_file(f.name, f.getvalue(), invert=invert)
+                df["category"] = categorize.apply_rules(df)
+                inseridos = storage.insert_transactions(df)
+                total_novos += inseridos
+                resumo.append({"arquivo": f.name, "lidas": len(df),
+                               "novas": inseridos, "status": "ok"})
+            except Exception as e:  # noqa: BLE001
+                resumo.append({"arquivo": f.name, "lidas": 0, "novas": 0,
+                               "status": f"erro: {e}"})
+            finally:
+                df = None
+                gc.collect()
+                prog.progress(i / len(files),
+                              text=f"Processando... ({i}/{len(files)})")
+
+        prog.empty()
+        st.success(f"Concluído: {total_novos} transações novas salvas.")
+        st.dataframe(pd.DataFrame(resumo), use_container_width=True,
+                     hide_index=True)
+        st.info("Abra a aba **Transações** para categorizar e revisar, "
+                "ou o **Dashboard** para ver os gráficos.")
+
+    if files:
+        st.caption(f"{len(files)} arquivo(s) selecionado(s). "
+                   "Dica: se o app travar com muitos PDFs de uma vez, "
+                   "importe em lotes menores (3–4 por vez).")
 
 
 # ---------------------------------------------------------------------------
