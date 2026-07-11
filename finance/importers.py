@@ -194,15 +194,46 @@ def _parse_pdf_line(line: str) -> dict | None:
     return {"date": date, "description": desc, "amount": amount, "account": ""}
 
 
+_PDF_COLS = ["date", "description", "amount", "account"]
+
+
 def parse_pdf(data: bytes) -> pd.DataFrame:
     """Extrai transações de um extrato em PDF (melhor esforço).
 
-    Tenta primeiro tabelas estruturadas; se não achar, cai para leitura linha a
-    linha. Revise sempre o resultado — PDF é o formato menos confiável.
+    Usa primeiro o ``pypdf`` (leitura de texto, leve em memória). Só recorre ao
+    ``pdfplumber`` (tabelas, mais pesado) se o caminho leve não achar nada —
+    isso evita estourar a memória no plano gratuito ao importar vários PDFs.
+    Revise sempre o resultado — PDF é o formato menos confiável.
     """
-    import pdfplumber
+    linhas = _parse_pdf_pypdf(data)
+    if linhas:
+        return pd.DataFrame(linhas, columns=_PDF_COLS)
+    return _parse_pdf_plumber(data)
 
-    cols = ["date", "description", "amount", "account"]
+
+def _parse_pdf_pypdf(data: bytes) -> list[dict]:
+    """Leitura leve: extrai texto com pypdf e interpreta linha a linha."""
+    linhas: list[dict] = []
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        for page in reader.pages:
+            for line in (page.extract_text() or "").split("\n"):
+                rec = _parse_pdf_line(line)
+                if rec:
+                    linhas.append(rec)
+    except Exception:  # noqa: BLE001 - pypdf indisponível ou PDF ilegível
+        return []
+    return linhas
+
+
+def _parse_pdf_plumber(data: bytes) -> pd.DataFrame:
+    """Fallback pesado: usa pdfplumber para PDFs com tabelas estruturadas."""
+    try:
+        import pdfplumber
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame(columns=_PDF_COLS)
+
     tabelas = []
     linhas = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -222,7 +253,7 @@ def parse_pdf(data: bytes) -> pd.DataFrame:
                     continue
 
         if tabelas:
-            return pd.concat(tabelas, ignore_index=True)[cols]
+            return pd.concat(tabelas, ignore_index=True)[_PDF_COLS]
 
         for page in pdf.pages:
             for line in (page.extract_text() or "").split("\n"):
@@ -230,7 +261,7 @@ def parse_pdf(data: bytes) -> pd.DataFrame:
                 if rec:
                     linhas.append(rec)
 
-    return pd.DataFrame(linhas, columns=cols)
+    return pd.DataFrame(linhas, columns=_PDF_COLS)
 
 
 # ---------------------------------------------------------------------------
