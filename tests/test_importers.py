@@ -71,3 +71,29 @@ def test_parse_tabular_sem_data_erro():
     raw = pd.DataFrame({"x": [1], "Valor": ["10,00"]})
     with pytest.raises(ValueError):
         importers.parse_tabular(raw)
+
+
+def test_parse_pdf_line_debito_credito():
+    # marcador D/C define o sinal
+    rec = importers._parse_pdf_line("15/03/2026 PAGAMENTO UBER 42,50 D")
+    assert rec is not None
+    assert rec["amount"] == pytest.approx(-42.50)
+    assert "UBER" in rec["description"]
+
+    rec2 = importers._parse_pdf_line("01/03/2026 SALARIO EMPRESA 3.000,00 C")
+    assert rec2["amount"] == pytest.approx(3000.0)
+
+
+def test_parse_pdf_line_valor_negativo():
+    rec = importers._parse_pdf_line("10/02/2026 COMPRA MERCADO -150,00")
+    assert rec["amount"] == pytest.approx(-150.0)
+
+
+def test_parse_pdf_line_sem_data_ou_valor():
+    assert importers._parse_pdf_line("linha qualquer sem nada") is None
+    assert importers._parse_pdf_line("15/03/2026 sem valor aqui") is None
+
+
+def test_table_looks_like_extrato():
+    assert importers._table_looks_like_extrato(["Data", "Histórico", "Valor"])
+    assert not importers._table_looks_like_extrato(["Coluna A", "Coluna B"])

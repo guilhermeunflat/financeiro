@@ -79,8 +79,10 @@ if not df_all.empty:
 # ---------------------------------------------------------------------------
 if pagina == "Importar extratos":
     st.header("Importar extratos")
-    st.write("Envie os extratos dos últimos meses (OFX, CSV ou Excel). "
+    st.write("Envie os extratos dos últimos meses (OFX, CSV, Excel ou PDF). "
              "Transações repetidas são ignoradas automaticamente.")
+    st.caption("💡 OFX e CSV são os mais confiáveis. O PDF funciona por melhor "
+               "esforço (o layout varia por banco) — confira a prévia antes de salvar.")
 
     invert = st.checkbox(
         "Inverter sinal dos valores",
@@ -88,7 +90,7 @@ if pagina == "Importar extratos":
              "(comum em faturas de cartão).",
     )
     files = st.file_uploader(
-        "Arquivos de extrato", type=["ofx", "csv", "xlsx", "xls"],
+        "Arquivos de extrato", type=["ofx", "csv", "xlsx", "xls", "pdf"],
         accept_multiple_files=True,
     )
 

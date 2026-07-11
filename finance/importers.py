@@ -151,6 +151,89 @@ def parse_tabular(df_raw: pd.DataFrame, invert: bool = False) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# PDF (melhor esforço — layout de PDF varia muito por banco)
+# ---------------------------------------------------------------------------
+
+_PDF_DATE = re.compile(r"\b(\d{2}/\d{2}/\d{4}|\d{2}/\d{2}/\d{2})\b")
+_PDF_AMOUNT = re.compile(r"[-+]?\s*(?:R\$)?\s*\d{1,3}(?:\.\d{3})*,\d{2}")
+
+
+def _table_looks_like_extrato(header: list[str]) -> bool:
+    joined = " ".join(h or "" for h in header).lower()
+    chaves = ["data", "valor", "hist", "descr", "lanç", "lanc", "débito",
+              "debito", "crédito", "credito"]
+    return any(k in joined for k in chaves)
+
+
+def _parse_pdf_line(line: str) -> dict | None:
+    """Extrai uma transação de uma linha de texto de extrato em PDF."""
+    dm = _PDF_DATE.search(line)
+    if not dm:
+        return None
+    amounts = list(_PDF_AMOUNT.finditer(line))
+    if not amounts:
+        return None
+    date = pd.to_datetime(dm.group(1), dayfirst=True, errors="coerce")
+    if pd.isna(date):
+        return None
+
+    am = amounts[-1]
+    amount = to_float(am.group(0))
+    if amount is None:
+        return None
+
+    # marcador de débito/crédito logo após o valor (ex: "50,00 D")
+    tail = line[am.end():am.end() + 2].strip().upper()
+    if tail.startswith("D"):
+        amount = -abs(amount)
+    elif tail.startswith("C"):
+        amount = abs(amount)
+
+    desc = line[dm.end():am.start()].strip(" -\t|")
+    desc = re.sub(r"\s+", " ", desc) or line[:dm.start()].strip()
+    return {"date": date, "description": desc, "amount": amount, "account": ""}
+
+
+def parse_pdf(data: bytes) -> pd.DataFrame:
+    """Extrai transações de um extrato em PDF (melhor esforço).
+
+    Tenta primeiro tabelas estruturadas; se não achar, cai para leitura linha a
+    linha. Revise sempre o resultado — PDF é o formato menos confiável.
+    """
+    import pdfplumber
+
+    cols = ["date", "description", "amount", "account"]
+    tabelas = []
+    linhas = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            for table in (page.extract_tables() or []):
+                if not table or len(table) < 2:
+                    continue
+                header = [(h or "").strip() for h in table[0]]
+                if not _table_looks_like_extrato(header):
+                    continue
+                try:
+                    df_t = pd.DataFrame(table[1:], columns=header)
+                    parsed = parse_tabular(df_t)
+                    if not parsed.empty:
+                        tabelas.append(parsed)
+                except Exception:  # noqa: BLE001 - tabela mal formada, ignora
+                    continue
+
+        if tabelas:
+            return pd.concat(tabelas, ignore_index=True)[cols]
+
+        for page in pdf.pages:
+            for line in (page.extract_text() or "").split("\n"):
+                rec = _parse_pdf_line(line)
+                if rec:
+                    linhas.append(rec)
+
+    return pd.DataFrame(linhas, columns=cols)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch por tipo de arquivo
 # ---------------------------------------------------------------------------
 
@@ -170,8 +253,19 @@ def load_file(filename: str, data: bytes, invert: bool = False) -> pd.DataFrame:
     elif name.endswith(".csv"):
         df = _read_csv_flexible(data)
         df = parse_tabular(df, invert=invert)
+    elif name.endswith(".pdf"):
+        df = parse_pdf(data)
+        if invert and not df.empty:
+            df["amount"] = -df["amount"]
     else:
-        raise ValueError(f"Formato não suportado: {filename} (use OFX, CSV ou Excel)")
+        raise ValueError(
+            f"Formato não suportado: {filename} (use OFX, CSV, Excel ou PDF)")
+
+    if df.empty:
+        raise ValueError(
+            "Não consegui extrair transações do arquivo. "
+            "Se for PDF, tente exportar o extrato em OFX ou CSV (mais confiável)."
+        )
 
     df["source_file"] = filename
     df["category"] = None
